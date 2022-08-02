@@ -14,12 +14,6 @@ include_directories(${DIR_INC})
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED true)
 set(CMAKE_C_FLAGS "-pedantic -Wall -Werror ${CMAKE_C_FLAGS}")
-set(SOURCES ${DIR_SRC}/main.c)
-
-if(WIN32)
-    set(SOURCES ${DIR_SRC}/win/mdprocess.c ${SOURCES})
-else()
-    set(SOURCES ${DIR_SRC}/unx/mdprocess.c ${SOURCES})
-endif()
+set(SOURCES ${DIR_SRC}/mdprocess.c ${DIR_SRC}/main.c)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
