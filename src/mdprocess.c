@@ -2,7 +2,7 @@
  * Contains Windows- and Unix-specific implementation of general functions
  * for creating a Media Downloader process.
  *
- * Update date: 2022-08-02
+ * Update date: 2022-08-03
  * Author: Sune
  */
 
@@ -61,11 +61,13 @@ static _char_t* string_format(const _char_t* format, ...) {
 
 int run_process(const _char_t* exe_path, const _char_t* jar_path, const _char_t* cmd_args) {
     int return_code = EXIT_CODE_SUCCESS;
+
     // Get the file name from the given path
     _char_t* exe_name;
     if(!get_file_name(exe_path, NULL, &exe_name)) return EXIT_CODE_EXEC_ARGS_FAILURE; // Exit early
     // Prepare the CMD command that will be passed to the CreateProcess call
     _char_t* cmd_line = string_format(L"\"%ls\" -jar \"%ls\" %ls", exe_name, jar_path, cmd_args);
+
     if(cmd_line != NULL) {
         // Prepare variables for the CreateProcess call
         STARTUPINFOW startup_info;
@@ -73,6 +75,7 @@ int run_process(const _char_t* exe_path, const _char_t* jar_path, const _char_t*
         ZeroMemory(&startup_info, sizeof(startup_info));
         ZeroMemory(&process_info, sizeof(process_info));
         startup_info.cb = sizeof(startup_info);
+
         if(!CreateProcessW(exe_path, cmd_line, NULL, NULL, false,
                            CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                            NULL, NULL, &startup_info, &process_info)) {
@@ -81,11 +84,62 @@ int run_process(const _char_t* exe_path, const _char_t* jar_path, const _char_t*
             CloseHandle(process_info.hProcess);
             CloseHandle(process_info.hThread);
         }
+
         free(exe_name);
         free(cmd_line);
     } else {
         return_code = EXIT_CODE_MALLOC_FAILURE;
     }
+
+    return return_code;
+}
+
+static bool file_exists(const _char_t* path) {
+    DWORD dwAttrib = GetFileAttributesW(path);
+    return (dwAttrib != INVALID_FILE_ATTRIBUTES
+                && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
+}
+
+bool jar_file_exists() {
+    return file_exists(current_dir_file_path(L"media-downloader.jar"));
+}
+
+bool extractor_file_exists() {
+    return file_exists(current_dir_file_path(L"mdext"));
+}
+
+int run_extract() {
+    int return_code = EXIT_CODE_SUCCESS;
+    const _char_t* extractor_path = current_dir_file_path(L"mdext");
+
+    // (1) Run the extractor and extract all the files
+    STARTUPINFOW startup_info;
+    PROCESS_INFORMATION process_info;
+    ZeroMemory(&startup_info, sizeof(startup_info));
+    ZeroMemory(&process_info, sizeof(process_info));
+    startup_info.cb = sizeof(startup_info);
+
+    if(!CreateProcessW(extractor_path, L"mdext", NULL, NULL, false,
+                       CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                       NULL, NULL, &startup_info, &process_info)) {
+        return_code = EXIT_CODE_EXEC_FAILURE;
+    } else {
+        // Wait for the process to finish
+        if(WaitForSingleObject(process_info.hProcess, INFINITE) != WAIT_OBJECT_0) {
+            return_code = EXIT_CODE_WAIT_FAILURE;
+        }
+
+        CloseHandle(process_info.hProcess);
+        CloseHandle(process_info.hThread);
+    }
+
+    // (2) Delete the extractor file since it is not needed
+    if(return_code == EXIT_CODE_SUCCESS
+            && !DeleteFileW(extractor_path)) {
+        // Deleting the file failed
+        return_code = EXIT_CODE_DEL_FAILURE;
+    }
+
     return return_code;
 }
 
@@ -95,6 +149,8 @@ int run_process(const _char_t* exe_path, const _char_t* jar_path, const _char_t*
 
 #include <unistd.h>
 #include <stdio.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
 
 #ifdef __APPLE__
 #include <sys/syslimits.h>
@@ -153,6 +209,58 @@ int run_process(const _char_t* exe_path, const _char_t* jar_path, const _char_t*
     // Create the process
     if(execvp(exe_path, args) == -1) return_code = EXIT_CODE_EXEC_FAILURE;
     free(exe_name);
+    return return_code;
+}
+
+static bool file_exists(const _char_t* path) {
+    return access(path, F_OK) == 0;
+}
+
+bool jar_file_exists() {
+    return file_exists(current_dir_file_path("media-downloader.jar"));
+}
+
+bool extractor_file_exists() {
+    return file_exists(current_dir_file_path("mdext"));
+}
+
+int run_extract() {
+    int return_code = EXIT_CODE_SUCCESS;
+    const _char_t* extractor_path = current_dir_file_path("mdext");
+
+    // (1) Run the extractor and extract all the files
+    int pid = fork();
+    if(pid < 0) {
+        return_code = EXIT_CODE_EXEC_FAILURE;
+    } else if(pid == 0) {
+        _char_t* args[] = { "mdext", NULL };
+        if(execvp(extractor_path, args) == -1) {
+            return_code = EXIT_CODE_EXEC_FAILURE;
+        }
+    } else {
+        // Wait for the process to finish
+        int status;
+        if(waitpid(pid, &status, 0) != pid) {
+            return_code = EXIT_CODE_WAIT_FAILURE;
+        }
+    }
+
+    // (2) Delete the extractor file since it is not needed
+    if(return_code == EXIT_CODE_SUCCESS
+            && remove(extractor_path)) {
+        // Deleting the file failed
+        return_code = EXIT_CODE_DEL_FAILURE;
+    }
+
+    // (3) Make the Java executable file executable
+    const _char_t* java_path = current_dir_file_path("jre/bin/java");
+    struct stat stats;
+    if(stat(java_path, &stats)
+            || chmod(java_path, stats.st_mode | S_IXUSR | S_IXGRP | S_IXOTH)) {
+        // Changing the permissions failed
+        return_code = EXIT_CODE_EXEC_FAILURE;
+    }
+
     return return_code;
 }
 
